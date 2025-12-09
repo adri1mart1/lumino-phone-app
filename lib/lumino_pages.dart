@@ -9,6 +9,10 @@ import 'dart:typed_data';
 const String LUMINO_DEVICE_NAME = "Lumino";
 const String LP_PWM_SERVICE_UUID = "8e2a9190-7a6f-4e60-9fb9-2262a8d35112";
 const String LP_PWM_CHAR_UUID = "8e2a9191-7a6f-4e60-9fb9-2262a8d35112";
+const String LP_ALARM_TIME_CHAR_UUID = "8e2a9192-7a6f-4e60-9fb9-2262a8d35112";
+
+const String LP_TIME_SERVICE_UUID = "00001805-0000-1000-8000-00805f9b34fb";
+const String LP_CURRENT_TIME_CHAR_UUID = "00002a2b-0000-1000-8000-00805f9b34fb";
 
 // Global variable to hold the connected device reference
 BluetoothDevice? connectedLuminoDevice;
@@ -76,21 +80,25 @@ class _StartPageState extends State<StartPage> {
   }
 
   Future<void> _initiateConnection() async {
-    setState(() {
-      _isConnecting = true;
-      _connectionStatus = "Checking permissions..."; // Changed status message
-    });
+    if (mounted) {
+      setState(() {
+        _isConnecting = true;
+        _connectionStatus = "Checking permissions..."; // Changed status message
+      });
+    }
 
     // 1. Request Permissions at Runtime
     bool permissionsGranted = await _requestPermissions();
     if (!permissionsGranted) {
-      setState(() => _isConnecting = false);
+      if (mounted) setState(() => _isConnecting = false);
       return;
     }
 
-    setState(() {
-      _connectionStatus = "Checking Bluetooth status...";
-    });
+    if (mounted) {
+      setState(() {
+        _connectionStatus = "Checking Bluetooth status...";
+      });
+    }
 
     // 2. Check Adapter Status (Code remains correct as previously fixed)
     if (FlutterBluePlus.isSupported == false) {
@@ -109,9 +117,11 @@ class _StartPageState extends State<StartPage> {
     }
 
     // 3. Start Scanning
-    setState(() {
-      _connectionStatus = "Scanning for $LUMINO_DEVICE_NAME...";
-    });
+    if (mounted) {
+      setState(() {
+        _connectionStatus = "Scanning for $LUMINO_DEVICE_NAME...";
+      });
+    }
 
     // ... (rest of the scanning and connection logic remains the same) ...
     // ... (Use the original code from the previous response for the rest of _initiateConnection)
@@ -138,9 +148,11 @@ class _StartPageState extends State<StartPage> {
       _showError('Device "$LUMINO_DEVICE_NAME" not found.');
     }
 
-    setState(() {
-      _isConnecting = false;
-    });
+    if (mounted) {
+      setState(() {
+        _isConnecting = false;
+      });
+    }
   }
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
@@ -257,6 +269,8 @@ class _ControlPageState extends State<ControlPage> {
   );
 
   BluetoothCharacteristic? _pwmCharacteristic;
+  BluetoothCharacteristic? _currentTimeCharacteristic;
+  BluetoothCharacteristic? _alarmTimeCharacteristic;
 
   // Controller for the manual input field
   late final TextEditingController _valueController; // Renamed controller
@@ -279,8 +293,12 @@ class _ControlPageState extends State<ControlPage> {
     List<BluetoothService> services = await connectedLuminoDevice!.discoverServices();
 
     // 2. Define the target UUIDs (using the constants defined earlier)
-    Guid targetPwmCharGuid = Guid(LP_PWM_CHAR_UUID);
     Guid targetServiceGuid = Guid(LP_PWM_SERVICE_UUID);
+    Guid targetPwmCharGuid = Guid(LP_PWM_CHAR_UUID);
+    Guid targetAlarmTimeCharGuid = Guid(LP_ALARM_TIME_CHAR_UUID);
+
+    Guid targetTimeServiceGuid = Guid(LP_TIME_SERVICE_UUID);
+    Guid targetCurrentTimeCharGuid = Guid(LP_CURRENT_TIME_CHAR_UUID);
 
     for (var service in services) {
       if (service.uuid == targetServiceGuid) {
@@ -289,14 +307,96 @@ class _ControlPageState extends State<ControlPage> {
             // Store the characteristic reference
             _pwmCharacteristic = characteristic;
             print("Found and stored PWM characteristic: ${characteristic.uuid}");
+          } else if (characteristic.uuid == targetAlarmTimeCharGuid) {
+            _alarmTimeCharacteristic = characteristic;
+            print("Found and stored Alarm characteristic: ${characteristic.uuid}");
           }
           // Add checks for other characteristics (e.g., time/alarm) here later
+        }
+      } else if (service.uuid == targetTimeServiceGuid) {
+        for (var characteristic in service.characteristics) {
+          if (characteristic.uuid == targetCurrentTimeCharGuid) {
+            _currentTimeCharacteristic = characteristic;
+            print("Found and stored current time characteristic: ${characteristic.uuid}");
+          }
         }
       }
     }
 
-    if (_pwmCharacteristic == null) {
-      _showError("Critical Error: Could not find PWM characteristic.");
+    // Critical check for all characteristics
+    if (_pwmCharacteristic == null || _currentTimeCharacteristic == null || _alarmTimeCharacteristic == null) {
+      _showError("Critical Error: One or more characteristics (PWM/Time/Alarm) not found.");
+    } else {
+      // NEW: Trigger the read operation after successful discovery
+      _readInitialData();
+    }
+  }
+
+  static const int CTS_CURRENT_TIME_LENGTH = 10;
+
+  Future<void> _readInitialData() async {
+    if (_currentTimeCharacteristic == null || _alarmTimeCharacteristic == null) {
+      _showError("Cannot read time data: Characteristics not set.");
+      return;
+    }
+
+    // 1. Read Current Time (Using BLE CTS Format)
+    try {
+      List<int> currentTimeBytes = await _currentTimeCharacteristic!.read();
+
+      // Ensure 10 bytes are received as per BLE CTS standard
+      if (currentTimeBytes.length == CTS_CURRENT_TIME_LENGTH) {
+        final ByteData byteData = ByteData.sublistView(Uint8List.fromList(currentTimeBytes));
+
+        // Decode the 10-byte structure:
+
+        // Bytes 0-1: Year (Little Endian)
+        int year = byteData.getUint16(0, Endian.little);
+
+        // Bytes 2-6: Month, Day, Hour, Minute, Second
+        int month = byteData.getUint8(2);
+        int day = byteData.getUint8(3);
+        int hour = byteData.getUint8(4);
+        int minute = byteData.getUint8(5);
+        int second = byteData.getUint8(6);
+
+        // Create Dart DateTime object (Day of Week, Fractions, Adjust Reason are ignored for DateTime creation)
+        DateTime currentTime = DateTime(year, month, day, hour, minute, second);
+
+        setState(() {
+          _data.currentDateTime = currentTime;
+        });
+        print("Read Current Time (CTS): $currentTime");
+
+      } else {
+        _showError("Current Time characteristic returned ${currentTimeBytes.length} bytes (expected $CTS_CURRENT_TIME_LENGTH).");
+      }
+
+    } catch (e) {
+      _showError("Failed to read Current Time: ${e.toString()}");
+    }
+
+    // 2. Read Alarm Time (Similar logic)
+    try {
+      List<int> alarmTimeBytes = await _alarmTimeCharacteristic!.read();
+
+      if (alarmTimeBytes.length == 8) {
+        final ByteData byteData = ByteData.sublistView(Uint8List.fromList(alarmTimeBytes));
+        int epochSeconds = byteData.getInt64(0, Endian.little);
+
+        DateTime alarmTime = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000);
+
+        setState(() {
+          _data.alarmDateTime = alarmTime;
+        });
+        print("Read Alarm Time: $alarmTime");
+
+      } else {
+        _showError("Alarm Time characteristic returned ${alarmTimeBytes.length} bytes (expected 8).");
+      }
+
+    } catch (e) {
+      _showError("Failed to read Alarm Time: ${e.toString()}");
     }
   }
 
@@ -374,6 +474,24 @@ class _ControlPageState extends State<ControlPage> {
     );
   }
 
+  void _handlePwmButtonPress(int adjustment) {
+    double currentValue = _data.dimmingValue;
+    double newValue = currentValue + adjustment;
+
+    // Ensure the new value stays within the 0 to 10000 bounds
+    if (newValue < 0) {
+        newValue = 0;
+    } else if (newValue > 10000) {
+        newValue = 10000;
+    }
+
+    // 1. Update UI and State immediately
+    _updateDimmingUI(newValue);
+
+    // 2. Send the BLE command instantly (since this is a discrete action)
+    _handleSliderValueChangeEnd(newValue);
+  }
+
   // Helper functions (omitted for brevity, assume they are the same as before)
   String _formatDateTime(DateTime dt) {
     return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
@@ -448,13 +566,24 @@ class _ControlPageState extends State<ControlPage> {
   }
 
   void _disconnect() async {
-    try {
-      // Disconnect the device
-      await connectedLuminoDevice?.disconnect();
-      // The listener will catch the state change and call _handleDisconnection
-    } catch (e) {
-      // Handle cases where disconnect fails gracefully
-      _handleDisconnection();
+    // 1. Check if the device object is available
+    if (connectedLuminoDevice != null) {
+        try {
+            // 2. Send the explicit disconnect command to the BLE stack
+            await connectedLuminoDevice!.disconnect();
+
+            // NOTE: The connectionState listener often catches the disconnect,
+            // but we call _handleDisconnection manually as a fallback for the button press.
+            _handleDisconnection();
+
+        } catch (e) {
+            // If the disconnect fails (e.g., device already powered off),
+            // we still treat it as disconnected and clean up.
+            _handleDisconnection();
+        }
+    } else {
+        // If connectedLuminoDevice is null, just handle cleanup and navigation
+        _handleDisconnection();
     }
   }
 
@@ -579,6 +708,37 @@ class _ControlPageState extends State<ControlPage> {
                         );
                       }
                     },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Minus 1 Button
+                ElevatedButton.icon(
+                  onPressed: () => _handlePwmButtonPress(-1),
+                  icon: const Icon(Icons.remove),
+                  label: const Text("1"),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    backgroundColor: Colors.blueGrey.shade100,
+                    foregroundColor: Colors.black,
+                  ),
+                ),
+                const SizedBox(width: 50),
+
+                // Plus 1 Button
+                ElevatedButton.icon(
+                  onPressed: () => _handlePwmButtonPress(1),
+                  icon: const Icon(Icons.add),
+                  label: const Text("1"),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    backgroundColor: Colors.blueGrey.shade100,
+                    foregroundColor: Colors.black,
                   ),
                 ),
               ],
