@@ -18,7 +18,6 @@ const String LP_CURRENT_TIME_CHAR_UUID = "00002a2b-0000-1000-8000-00805f9b34fb";
 BluetoothDevice? connectedLuminoDevice;
 
 // --- State Class for the Control Page ---
-// (Remains the same)
 class LuminoControlData {
   DateTime currentDateTime;
   DateTime alarmDateTime;
@@ -407,6 +406,8 @@ class _ControlPageState extends State<ControlPage> {
     if (connectedLuminoDevice != null) {
       _discoverAndStoreCharacteristics();
     }
+
+
     // Initialize the text field with the current slider value
     _valueController = TextEditingController(
       text: _data.dimmingValue.round().toString(),
@@ -428,7 +429,18 @@ class _ControlPageState extends State<ControlPage> {
       });
   }
 
-  // NEW: Function to handle the final slider release (sends BLE command)
+  void _handleCoarseSliderChange(double newValue) {
+      _updateDimmingUI(newValue);
+  }
+
+  void _handleFineSliderChange(double newValue) {
+      // The fine slider should ONLY allow control if the value is <= 100
+      if (_data.dimmingValue <= 100) {
+          double commandValue = newValue.clamp(0, 100);
+          _updateDimmingUI(commandValue);
+      }
+  }
+
   void _handleSliderValueChangeEnd(double finalValue) {
       // Send the raw value (0 to 10000) directly over BLE
       _sendDimmingValueToBLE(finalValue.round());
@@ -485,11 +497,12 @@ class _ControlPageState extends State<ControlPage> {
         newValue = 10000;
     }
 
-    // 1. Update UI and State immediately
-    _updateDimmingUI(newValue);
-
-    // 2. Send the BLE command instantly (since this is a discrete action)
-    _handleSliderValueChangeEnd(newValue);
+    // Apply the update if we are in the active control range (0-100)
+    // OR if we are adjusting downward from just above 100 (101 -> 100)
+    if (currentValue <= 100 || newValue <= 100) {
+        _updateDimmingUI(newValue);
+        _handleSliderValueChangeEnd(newValue);
+    }
   }
 
   // Helper functions (omitted for brevity, assume they are the same as before)
@@ -517,7 +530,8 @@ class _ControlPageState extends State<ControlPage> {
           picked.minute,
         );
         // TODO: BLE command to set alarm time
-        _sendDimmingValueToBLE(_data.dimmingValue.round());
+        print("Alarm time: $_data.alarmDateTime.year ");
+        // _sendDimmingValueToBLE(_data.dimmingValue.round());
       });
     }
 
@@ -670,14 +684,15 @@ class _ControlPageState extends State<ControlPage> {
             Row(
               children: <Widget>[
                 // 1. Horizontal Slider
+                const SizedBox(width: 50, child: Text("Main", style: TextStyle(fontSize: 12))),
                 Expanded(
                   child: Slider(
                     value: _data.dimmingValue,
                     min: 0,
                     max: 10000,
-                    divisions: 10000,
+                    divisions: 100,
                     label: _data.dimmingValue.round().toString(),
-                    onChanged: _updateDimmingUI,
+                    onChanged: _handleCoarseSliderChange,
                     onChangeEnd: _handleSliderValueChangeEnd,
                     activeColor: Colors.amber,
                     inactiveColor: Colors.amber.shade100,
@@ -713,6 +728,28 @@ class _ControlPageState extends State<ControlPage> {
               ],
             ),
             const SizedBox(height: 10),
+
+            // --- 2. FINE SLIDER ROW (Focus 0 - 100) ---
+            Row(
+              children: <Widget>[
+                const SizedBox(width: 50, child: Text("Fine", style: TextStyle(fontSize: 12))),
+                Expanded(
+                  child: Slider(
+                    // Visual Value: Caps at 100 for display
+                    value: _data.dimmingValue.clamp(0, 100),
+                    min: 0,
+                    max: 100, // Range is always 0 to 100
+                    divisions: 100, // 1 unit per division
+                    label: _data.dimmingValue.round().toString(),
+                    onChanged: _handleFineSliderChange, // Only allows input if total value is <= 100
+                    onChangeEnd: _handleSliderValueChangeEnd, // Sends the final command
+                    activeColor: Colors.green,
+                    inactiveColor: Colors.green.shade100,
+                  ),
+                ),
+                const SizedBox(width: 100 + 10), // Offset to align with the text field column
+              ],
+            ),
 
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
