@@ -10,9 +10,13 @@ const String LUMINO_DEVICE_NAME = "Lumino";
 const String LP_PWM_SERVICE_UUID = "8e2a9190-7a6f-4e60-9fb9-2262a8d35112";
 const String LP_PWM_CHAR_UUID = "8e2a9191-7a6f-4e60-9fb9-2262a8d35112";
 const String LP_ALARM_TIME_CHAR_UUID = "8e2a9192-7a6f-4e60-9fb9-2262a8d35112";
+const String LP_FREQ_CHAR_UUID = "8e2a9193-7a6f-4e60-9fb9-2262a8d35112";
+const String LP_AUTOPWM_CHAR_UUID = "8e2a9194-7a6f-4e60-9fb9-2262a8d35112";
 
 const String LP_TIME_SERVICE_UUID = "00001805-0000-1000-8000-00805f9b34fb";
 const String LP_CURRENT_TIME_CHAR_UUID = "00002a2b-0000-1000-8000-00805f9b34fb";
+
+const double LP_MAX_PWM_VALUE = 1000000;
 
 // Global variable to hold the connected device reference
 BluetoothDevice? connectedLuminoDevice;
@@ -267,12 +271,27 @@ class _ControlPageState extends State<ControlPage> {
     dimmingValue: 0.0,
   );
 
+  bool _isAlarmEnabled = false;
+  // Map to track the state of each day (1=Monday, 7=Sunday)
+  Map<int, bool> _alarmDays = {
+      1: false, // Monday
+      2: false, // Tuesday
+      3: false, // Wednesday
+      4: false, // Thursday
+      5: false, // Friday
+      6: false, // Saturday
+      7: false, // Sunday
+  };
+
   BluetoothCharacteristic? _pwmCharacteristic;
   BluetoothCharacteristic? _currentTimeCharacteristic;
   BluetoothCharacteristic? _alarmTimeCharacteristic;
+  BluetoothCharacteristic? _autoPwmCharacteristic;
 
   // Controller for the manual input field
   late final TextEditingController _valueController; // Renamed controller
+  int _durationSeconds = 60;
+  late final TextEditingController _durationController = TextEditingController(text: 60.toString());
 
   void _showError(String message) {
     if (mounted) {
@@ -295,6 +314,7 @@ class _ControlPageState extends State<ControlPage> {
     Guid targetServiceGuid = Guid(LP_PWM_SERVICE_UUID);
     Guid targetPwmCharGuid = Guid(LP_PWM_CHAR_UUID);
     Guid targetAlarmTimeCharGuid = Guid(LP_ALARM_TIME_CHAR_UUID);
+    Guid targetAutoPwmCharGuid = Guid(LP_AUTOPWM_CHAR_UUID);
 
     Guid targetTimeServiceGuid = Guid(LP_TIME_SERVICE_UUID);
     Guid targetCurrentTimeCharGuid = Guid(LP_CURRENT_TIME_CHAR_UUID);
@@ -309,6 +329,9 @@ class _ControlPageState extends State<ControlPage> {
           } else if (characteristic.uuid == targetAlarmTimeCharGuid) {
             _alarmTimeCharacteristic = characteristic;
             print("Found and stored Alarm characteristic: ${characteristic.uuid}");
+          } else if (characteristic.uuid == targetAutoPwmCharGuid) {
+            _autoPwmCharacteristic = characteristic;
+            print("Found and stored AutoPWM characteristic: ${characteristic.uuid}");
           }
           // Add checks for other characteristics (e.g., time/alarm) here later
         }
@@ -323,7 +346,8 @@ class _ControlPageState extends State<ControlPage> {
     }
 
     // Critical check for all characteristics
-    if (_pwmCharacteristic == null || _currentTimeCharacteristic == null || _alarmTimeCharacteristic == null) {
+    if (_pwmCharacteristic == null || _currentTimeCharacteristic == null ||
+        _alarmTimeCharacteristic == null || _autoPwmCharacteristic == null) {
       _showError("Critical Error: One or more characteristics (PWM/Time/Alarm) not found.");
     } else {
       // NEW: Trigger the read operation after successful discovery
@@ -332,6 +356,7 @@ class _ControlPageState extends State<ControlPage> {
   }
 
   static const int CTS_CURRENT_TIME_LENGTH = 10;
+  static const int ALARM_CHAR_LENGTH = 4;
 
   Future<void> _readInitialData() async {
     if (_currentTimeCharacteristic == null || _alarmTimeCharacteristic == null) {
@@ -375,27 +400,179 @@ class _ControlPageState extends State<ControlPage> {
       _showError("Failed to read Current Time: ${e.toString()}");
     }
 
-    // 2. Read Alarm Time (Similar logic)
+    // 2. Read Alarm Data (Decoding 4-byte custom struct)
     try {
       List<int> alarmTimeBytes = await _alarmTimeCharacteristic!.read();
 
-      if (alarmTimeBytes.length == 8) {
+      if (alarmTimeBytes.length == ALARM_CHAR_LENGTH) {
         final ByteData byteData = ByteData.sublistView(Uint8List.fromList(alarmTimeBytes));
-        int epochSeconds = byteData.getInt64(0, Endian.little);
 
-        DateTime alarmTime = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000);
+        // Decode the 4 bytes:
+        int isEnabled = byteData.getUint8(0);
+        int hour = byteData.getUint8(1);
+        int minute = byteData.getUint8(2);
+        int dayOfWeekBitset = byteData.getUint8(3);
+
+        // Update the alarm time in _data (only for display)
+        DateTime readTime = DateTime(2000, 1, 1, hour, minute);
 
         setState(() {
-          _data.alarmDateTime = alarmTime;
+          _data.alarmDateTime = readTime;
+          _isAlarmEnabled = isEnabled == 1;
+
+          // Decode the day of week bitset (Byte 3)
+          // Zephyr: MONDAY is BIT(0), TUESDAY is BIT(1), etc.
+          // Flutter: 1=Mon, 2=Tue, ..., 7=Sun
+          for (int i = 0; i < 7; i++) {
+              // Check if the i-th bit is set
+              bool isSet = (dayOfWeekBitset & (1 << i)) != 0;
+              // Map bit index (0-6) to day index (1-7)
+              _alarmDays[i + 1] = isSet;
+          }
         });
-        print("Read Alarm Time: $alarmTime");
+        print("Read Alarm: Hour $hour, Minute $minute, Enabled $_isAlarmEnabled, Days $dayOfWeekBitset");
 
       } else {
-        _showError("Alarm Time characteristic returned ${alarmTimeBytes.length} bytes (expected 8).");
+        _showError("Alarm characteristic returned ${alarmTimeBytes.length} bytes (expected 4).");
       }
 
     } catch (e) {
-      _showError("Failed to read Alarm Time: ${e.toString()}");
+      _showError("Failed to read Alarm: ${e.toString()}");
+    }
+  }
+
+  Future<void> _writeCurrentTimeToBLE() async {
+    if (_currentTimeCharacteristic == null) {
+        _showError('Current Time characteristic not ready.');
+        return;
+    }
+
+    final DateTime now = DateTime.now();
+
+    // 1. Prepare the 10-byte data structure
+    final ByteData byteData = ByteData(CTS_CURRENT_TIME_LENGTH);
+
+    // Byte 0-1: Year (uint16_t, Little Endian)
+    // The C code uses sys_cpu_to_le16, so we must use Endian.little
+    byteData.setUint16(0, now.year, Endian.little);
+
+    // Byte 2: Month (uint8_t, 1=Jan)
+    byteData.setUint8(2, now.month);
+
+    // Byte 3: Day of Month (uint8_t)
+    byteData.setUint8(3, now.day);
+
+    // Byte 4: Hour (uint8_t)
+    byteData.setUint8(4, now.hour);
+
+    // Byte 5: Minute (uint8_t)
+    byteData.setUint8(5, now.minute);
+
+    // Byte 6: Second (uint8_t)
+    byteData.setUint8(6, now.second);
+
+    // Byte 7: Day of Week (uint8_t, 1=Mon, 7=Sun). Dart's weekday starts at 1=Mon.
+    byteData.setUint8(7, now.weekday);
+
+    // Byte 8: Fractions 256 (uint8_t, often 0)
+    byteData.setUint8(8, 0);
+
+    // Byte 9: Adjust Reason (uint8_t, 0=No update, as per your C code)
+    byteData.setUint8(9, 0);
+
+    final List<int> valueBytes = byteData.buffer.asUint8List();
+
+    // 2. Write the data
+    try {
+        // Use withoutResponse: false (standard write)
+        await _currentTimeCharacteristic!.write(valueBytes, withoutResponse: false);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('System time synchronized to: ${now.toIso8601String()}')),
+        );
+
+        // After writing, re-read the device time to confirm synchronization
+        _readInitialData();
+
+    } catch (e) {
+        _showError('Current Time Write Failed: ${e.toString()}');
+    }
+  }
+
+  Future<void> _writeAlarmToBLE() async {
+    if (_alarmTimeCharacteristic == null) {
+        _showError('Alarm characteristic not ready.');
+        return;
+    }
+
+    // 1. Encode Day of Week Bitset (Byte 3)
+    int dayOfWeekBitset = 0;
+    // Iterate from Monday (index 1) to Sunday (index 7)
+    for (int i = 1; i <= 7; i++) {
+        if (_alarmDays[i] == true) {
+            // Set the corresponding bit (i-1 is the bit index: 0 for Mon, 6 for Sun)
+            dayOfWeekBitset |= (1 << (i - 1));
+        }
+    }
+
+    // 2. Prepare the 4-byte data structure
+    final ByteData byteData = ByteData(ALARM_CHAR_LENGTH);
+
+    // Byte 0: is_enabled (1 or 0)
+    byteData.setUint8(0, _isAlarmEnabled ? 1 : 0);
+
+    // Byte 1: hour
+    byteData.setUint8(1, _data.alarmDateTime.hour);
+
+    // Byte 2: minute
+    byteData.setUint8(2, _data.alarmDateTime.minute);
+
+    // Byte 3: day_of_week bitset
+    byteData.setUint8(3, dayOfWeekBitset);
+
+    final List<int> valueBytes = byteData.buffer.asUint8List();
+
+    // 3. Write the data
+    try {
+        await _alarmTimeCharacteristic!.write(valueBytes, withoutResponse: false);
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Alarm updated successfully!')),
+        );
+    } catch (e) {
+        _showError('Alarm Write Failed: ${e.toString()}');
+    }
+  }
+
+  // command: 1 for start, 0 for stop
+  Future<void> _sendAutoPwmCommand(int command) async {
+    if (_autoPwmCharacteristic == null) {
+        _showError('AutoPWM characteristic not ready.');
+        return;
+    }
+
+    final ByteData byteData = ByteData(5);
+
+    // Byte 0: Command (0 or 1)
+    byteData.setUint8(0, command);
+
+    // Bytes 1-4: Duration in seconds (uint32_t, Little Endian)
+    byteData.setUint32(1, command == 1 ? _durationSeconds : 0, Endian.little);
+
+    final List<int> valueBytes = byteData.buffer.asUint8List();
+
+    try {
+        await _autoPwmCharacteristic!.write(valueBytes, withoutResponse: false);
+
+        String message = (command == 1)
+            ? 'Wake-up sequence started for $_durationSeconds seconds.'
+            : 'Wake-up sequence stopped.';
+
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(message)),
+        );
+
+    } catch (e) {
+        _showError('AutoPWM Command Failed: ${e.toString()}');
     }
   }
 
@@ -413,12 +590,27 @@ class _ControlPageState extends State<ControlPage> {
       text: _data.dimmingValue.round().toString(),
     );
     // ... (rest of initState remains the same)
+
+    _durationController.addListener(_updateDurationFromField);
   }
 
   @override
   void dispose() {
     _valueController.dispose(); // Use new controller name
+    _durationController.dispose();
     super.dispose();
+  }
+
+  void _updateDurationFromField() {
+      final text = _durationController.text;
+      final int? newDuration = int.tryParse(text);
+      if (newDuration != null && newDuration >= 0) {
+        // Since this listener runs constantly, we use setState to ensure the UI
+        // reflects the duration (though it doesn't change anything visually outside the TextField)
+        setState(() {
+            _durationSeconds = newDuration;
+        });
+    }
   }
 
   void _updateDimmingUI(double newValue) {
@@ -434,15 +626,13 @@ class _ControlPageState extends State<ControlPage> {
   }
 
   void _handleFineSliderChange(double newValue) {
-      // The fine slider should ONLY allow control if the value is <= 100
-      if (_data.dimmingValue <= 100) {
-          double commandValue = newValue.clamp(0, 100);
+      if (_data.dimmingValue <= 10000) {
+          double commandValue = newValue.clamp(0, 10000);
           _updateDimmingUI(commandValue);
       }
   }
 
   void _handleSliderValueChangeEnd(double finalValue) {
-      // Send the raw value (0 to 10000) directly over BLE
       _sendDimmingValueToBLE(finalValue.round());
   }
 
@@ -453,7 +643,6 @@ class _ControlPageState extends State<ControlPage> {
       // Update the text field to match the slider's rounded value
       _valueController.text = newValue.round().toString();
     });
-    // Send the raw value (0 to 10000) directly
     _sendDimmingValueToBLE(newValue.round());
   }
 
@@ -490,16 +679,15 @@ class _ControlPageState extends State<ControlPage> {
     double currentValue = _data.dimmingValue;
     double newValue = currentValue + adjustment;
 
-    // Ensure the new value stays within the 0 to 10000 bounds
     if (newValue < 0) {
         newValue = 0;
-    } else if (newValue > 10000) {
-        newValue = 10000;
+    } else if (newValue > LP_MAX_PWM_VALUE) {
+        newValue = LP_MAX_PWM_VALUE;
     }
 
     // Apply the update if we are in the active control range (0-100)
     // OR if we are adjusting downward from just above 100 (101 -> 100)
-    if (currentValue <= 100 || newValue <= 100) {
+    if (currentValue <= 10000 || newValue <= 10000) {
         _updateDimmingUI(newValue);
         _handleSliderValueChangeEnd(newValue);
     }
@@ -515,25 +703,21 @@ class _ControlPageState extends State<ControlPage> {
     return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _selectAlarmTime(BuildContext context) async {
-    final TimeOfDay? picked = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(_data.alarmDateTime),
+  Future<void> _selectAlarmTime(TimeOfDay selectedTime) async {
+    // 1. Create a new DateTime object using the selected time
+    // We only care about hour and minute for the alarm characteristic
+    DateTime newAlarmDateTime = DateTime(
+        _data.alarmDateTime.year,
+        _data.alarmDateTime.month,
+        _data.alarmDateTime.day,
+        selectedTime.hour,
+        selectedTime.minute,
     );
-    if (picked != null) {
-      setState(() {
-        _data.alarmDateTime = DateTime(
-          _data.alarmDateTime.year,
-          _data.alarmDateTime.month,
-          _data.alarmDateTime.day,
-          picked.hour,
-          picked.minute,
-        );
-        // TODO: BLE command to set alarm time
-        print("Alarm time: $_data.alarmDateTime.year ");
-        // _sendDimmingValueToBLE(_data.dimmingValue.round());
-      });
-    }
+
+    // 2. Update the state
+    setState(() {
+      _data.alarmDateTime = newAlarmDateTime;
+    });
 
     // --- START BLE WRITE CODE PLACEHOLDER ---
     // Example: If you had a characteristic named `dimmingCharacteristic`:
@@ -629,16 +813,7 @@ class _ControlPageState extends State<ControlPage> {
                   style: const TextStyle(fontSize: 16),
                 ),
                 trailing: ElevatedButton.icon(
-                  onPressed: () {
-                    // Simulate updating the embedded system's time to the phone's current time
-                    setState(() {
-                      _data.currentDateTime = DateTime.now();
-                    });
-                    // TODO: BLE command to update date/time
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Time updated on embedded system!')),
-                    );
-                  },
+                  onPressed: _writeCurrentTimeToBLE,
                   icon: const Icon(Icons.sync),
                   label: const Text('Update'),
                 ),
@@ -646,28 +821,95 @@ class _ControlPageState extends State<ControlPage> {
             ),
             const SizedBox(height: 20),
 
-            // --- Alarm Date/Time Section ---
-            Card(
-              elevation: 4,
-              child: ListTile(
-                leading: const Icon(Icons.alarm, color: Colors.orange),
-                title: const Text(
-                  "Alarm Time:",
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                subtitle: Text(
-                  _formatTime(_data.alarmDateTime),
-                  style: const TextStyle(fontSize: 16),
-                ),
-                trailing: TextButton(
-                  onPressed: () => _selectAlarmTime(context),
-                  child: const Text('Edit'),
-                ),
-              ),
+            // --- ALARM CONTROL SECTION ---
+            Text(
+                "Alarm Control",
+                style: Theme.of(context).textTheme.headlineSmall,
             ),
-            const SizedBox(height: 30),
+            const SizedBox(height: 10),
 
-            const Divider(thickness: 1),
+            // Alarm Enable Switch and Time Picker
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // 1. Enable Switch
+                Row(
+                    children: [
+                        const Text('Alarm Enabled:'),
+                        Switch(
+                            value: _isAlarmEnabled,
+                            onChanged: (bool value) {
+                                setState(() {
+                                    _isAlarmEnabled = value;
+                                });
+                                _writeAlarmToBLE(); // Write immediately on switch change
+                            },
+                        ),
+                    ],
+                ),
+
+                // 2. Time Picker Button (Uses existing logic)
+                TextButton(
+                  onPressed: () async {
+                    TimeOfDay? selectedTime = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay.fromDateTime(_data.alarmDateTime),
+                    );
+                    if (selectedTime != null) {
+                      _selectAlarmTime(selectedTime); // Calls the existing _selectAlarmTime function
+                      _writeAlarmToBLE(); // Write immediately after time change
+                    }
+                  },
+                  child: Text(
+                    _formatTime(_data.alarmDateTime),
+                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            // 3. Day of Week Bitset Selector
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Repeat Days:'),
+                const SizedBox(height: 5),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: List.generate(7, (index) {
+                    final dayIndex = index + 1; // 1=Mon, 7=Sun
+                    final dayNames = ['M', 'Tu', 'W', 'Th', 'F', 'Sa', 'Su'];
+
+                    return InkWell(
+                      onTap: () {
+                        setState(() {
+                          _alarmDays[dayIndex] = !(_alarmDays[dayIndex] ?? false);
+                        });
+                        _writeAlarmToBLE(); // Write immediately on day toggle
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: (_alarmDays[dayIndex] ?? false) ? Colors.blue : Colors.grey.shade300,
+                        ),
+                        child: Text(
+                          dayNames[index],
+                          style: TextStyle(
+                            color: (_alarmDays[dayIndex] ?? false) ? Colors.white : Colors.black,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+              ],
+            ),
+
+            const Divider(),
             const SizedBox(height: 30),
 
             // --- Dimming Control Section ---
@@ -689,8 +931,8 @@ class _ControlPageState extends State<ControlPage> {
                   child: Slider(
                     value: _data.dimmingValue,
                     min: 0,
-                    max: 10000,
-                    divisions: 100,
+                    max: LP_MAX_PWM_VALUE,
+                    divisions: 10000,
                     label: _data.dimmingValue.round().toString(),
                     onChanged: _handleCoarseSliderChange,
                     onChangeEnd: _handleSliderValueChangeEnd,
@@ -714,7 +956,7 @@ class _ControlPageState extends State<ControlPage> {
                     ),
                     onSubmitted: (value) {
                       int? v = int.tryParse(value);
-                      if (v != null && v >= 0 && v <= 10000) {
+                      if (v != null && v >= 0 && v <= LP_MAX_PWM_VALUE) {
                         _updateDimmingValue(v.toDouble());
                       } else {
                         _valueController.text = _data.dimmingValue.round().toString();
@@ -729,17 +971,17 @@ class _ControlPageState extends State<ControlPage> {
             ),
             const SizedBox(height: 10),
 
-            // --- 2. FINE SLIDER ROW (Focus 0 - 100) ---
+            // --- 2. FINE SLIDER ROW (Focus 0 - 10000) ---
             Row(
               children: <Widget>[
                 const SizedBox(width: 50, child: Text("Fine", style: TextStyle(fontSize: 12))),
                 Expanded(
                   child: Slider(
                     // Visual Value: Caps at 100 for display
-                    value: _data.dimmingValue.clamp(0, 100),
+                    value: _data.dimmingValue.clamp(0, 10000),
                     min: 0,
-                    max: 100, // Range is always 0 to 100
-                    divisions: 100, // 1 unit per division
+                    max: 10000, // Range is always 0 to 10000
+                    divisions: 100, // 100 unit per division
                     label: _data.dimmingValue.round().toString(),
                     onChanged: _handleFineSliderChange, // Only allows input if total value is <= 100
                     onChangeEnd: _handleSliderValueChangeEnd, // Sends the final command
@@ -756,9 +998,9 @@ class _ControlPageState extends State<ControlPage> {
               children: [
                 // Minus 1 Button
                 ElevatedButton.icon(
-                  onPressed: () => _handlePwmButtonPress(-1),
+                  onPressed: () => _handlePwmButtonPress(-100),
                   icon: const Icon(Icons.remove),
-                  label: const Text("1"),
+                  label: const Text("100"),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                     backgroundColor: Colors.blueGrey.shade100,
@@ -769,9 +1011,9 @@ class _ControlPageState extends State<ControlPage> {
 
                 // Plus 1 Button
                 ElevatedButton.icon(
-                  onPressed: () => _handlePwmButtonPress(1),
+                  onPressed: () => _handlePwmButtonPress(100),
                   icon: const Icon(Icons.add),
-                  label: const Text("1"),
+                  label: const Text("100"),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                     backgroundColor: Colors.blueGrey.shade100,
@@ -782,6 +1024,61 @@ class _ControlPageState extends State<ControlPage> {
             ),
 
             const SizedBox(height: 50),
+
+            // Start/Stop Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // 1. START Button
+                ElevatedButton.icon(
+                  onPressed: () => _sendAutoPwmCommand(1), // Command 1: Start
+                  icon: const Icon(Icons.play_arrow, size: 20),
+                  label: const Text("Start"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade600,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+
+                const SizedBox(width: 15),
+
+                // 2. Duration Input Field
+                // SizedBox(
+                //   width: 120, // Slightly wider to include the label
+                //   child: Column(
+                //     mainAxisSize: MainAxisSize.min,
+                //     children: [
+                //       const Text("Duration (s)", style: TextStyle(fontSize: 12)),
+                //       const SizedBox(height: 4),
+                //       TextField(
+                //         controller: _durationController,
+                //         keyboardType: TextInputType.number,
+                //         textAlign: TextAlign.center,
+                //         decoration: const InputDecoration(
+                //           border: OutlineInputBorder(),
+                //           contentPadding: EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+                //         ),
+                //       ),
+                //     ],
+                //   ),
+                // ),
+
+                const SizedBox(width: 15),
+
+                // 3. STOP Button
+                ElevatedButton.icon(
+                  onPressed: () => _sendAutoPwmCommand(0), // Command 0: Stop
+                  icon: const Icon(Icons.stop, size: 20),
+                  label: const Text("Stop"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade600,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 30),
 
             // --- Disconnect Button ---
             Padding(
