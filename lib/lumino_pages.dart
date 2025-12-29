@@ -1,4 +1,3 @@
-// lumino_pages.dart
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -12,13 +11,9 @@ const String LP_PWM_CHAR_UUID = "8e2a9191-7a6f-4e60-9fb9-2262a8d35112";
 const String LP_ALARM_TIME_CHAR_UUID = "8e2a9192-7a6f-4e60-9fb9-2262a8d35112";
 const String LP_FREQ_CHAR_UUID = "8e2a9193-7a6f-4e60-9fb9-2262a8d35112";
 const String LP_AUTOPWM_CHAR_UUID = "8e2a9194-7a6f-4e60-9fb9-2262a8d35112";
-
 const String LP_TIME_SERVICE_UUID = "00001805-0000-1000-8000-00805f9b34fb";
 const String LP_CURRENT_TIME_CHAR_UUID = "00002a2b-0000-1000-8000-00805f9b34fb";
-
 const double LP_MAX_PWM_VALUE = 1000000;
-
-// Global variable to hold the connected device reference
 BluetoothDevice? connectedLuminoDevice;
 
 // --- State Class for the Control Page ---
@@ -75,10 +70,6 @@ class _StartPageState extends State<StartPage> {
             return false;
         }
     }
-    // If Location is denied but not permanently (locationStatus.isDenied),
-    // we proceed, hoping the Nearby Devices permission is enough.
-    // However, if scanning still fails, we will know Location is the problem.
-
     return true; // All critical checks passed
   }
 
@@ -109,9 +100,7 @@ class _StartPageState extends State<StartPage> {
       return;
     }
 
-    // This is where the old error occurred. Should be fixed now.
     await FlutterBluePlus.turnOn();
-
     await FlutterBluePlus.adapterState.where((s) => s == BluetoothAdapterState.on).first;
 
     if (await FlutterBluePlus.isOn == false) {
@@ -126,9 +115,6 @@ class _StartPageState extends State<StartPage> {
       });
     }
 
-    // ... (rest of the scanning and connection logic remains the same) ...
-    // ... (Use the original code from the previous response for the rest of _initiateConnection)
-
     await FlutterBluePlus.stopScan();
 
     var scan = FlutterBluePlus.scanResults.listen((results) async {
@@ -142,9 +128,7 @@ class _StartPageState extends State<StartPage> {
     });
 
     await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
-
     await Future.delayed(const Duration(seconds: 5));
-
     await scan.cancel();
 
     if (connectedLuminoDevice == null && mounted) {
@@ -164,10 +148,7 @@ class _StartPageState extends State<StartPage> {
     });
 
     try {
-      // Connect to the device with a timeout
       await device.connect(timeout: const Duration(seconds: 10));
-
-      // Connection successful
       connectedLuminoDevice = device;
 
       setState(() {
@@ -175,11 +156,9 @@ class _StartPageState extends State<StartPage> {
         _isConnecting = false;
       });
 
-      // Navigate to the Control Page
       if (mounted) context.go('/control');
 
     } catch (e) {
-      // Connection failed
       _showError('Connection failed: $e');
       connectedLuminoDevice = null;
     }
@@ -200,56 +179,65 @@ class _StartPageState extends State<StartPage> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Lumino Project'),
-        backgroundColor: Colors.blueGrey,
+        title: const Text('Lumino Control'),
+        backgroundColor: Colors.black,
+        centerTitle: true,
       ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              "Welcome to the Lumino Project",
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Colors.blueGrey,
-              ),
+      body: Stack(
+        children: <Widget>[
+          Positioned.fill(
+            child: Image.asset(
+              'assets/background.png',
+              fit: BoxFit.cover, // Ensure the image covers the entire screen area
+              opacity: const AlwaysStoppedAnimation(0.2), // Optional: Adjust opacity for better text readability
             ),
-            const SizedBox(height: 40),
-            if (_isConnecting)
-              const CircularProgressIndicator(),
-            const SizedBox(height: 20),
-            Text(
-              _connectionStatus,
-              style: TextStyle(
-                color: _connectionStatus.contains('Ready') || _connectionStatus.contains('Connected')
-                    ? Colors.green
-                    : Colors.red,
-              ),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _isConnecting ? null : _initiateConnection, // Disable button while connecting
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
-                backgroundColor: _isConnecting ? Colors.grey : Colors.blueAccent,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+          ),
+          ListView(
+            padding: const EdgeInsets.all(20.0),
+            children: <Widget>[
+              const Text(
+                "Welcome to the Lumino Project",
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blueGrey,
                 ),
               ),
-              child: Text(
-                _isConnecting ? "Connecting..." : "Initiate Connection",
-                style: const TextStyle(fontSize: 18),
+              const SizedBox(height: 40),
+              if (_isConnecting)
+                const CircularProgressIndicator(),
+              const SizedBox(height: 20),
+              Text(
+                _connectionStatus,
+                style: TextStyle(
+                  color: _connectionStatus.contains('Ready') || _connectionStatus.contains('Connected')
+                      ? Colors.green
+                      : Colors.red,
+                ),
               ),
-            ),
-          ],
-        ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _initiateConnection, // Disable button while connecting
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                  backgroundColor: _isConnecting ? Colors.grey : Colors.blueAccent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: Text(
+                  _isConnecting ? "Connecting..." : "Initiate Connection",
+                  style: const TextStyle(fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -718,39 +706,6 @@ class _ControlPageState extends State<ControlPage> {
     setState(() {
       _data.alarmDateTime = newAlarmDateTime;
     });
-
-    // --- START BLE WRITE CODE PLACEHOLDER ---
-    // Example: If you had a characteristic named `dimmingCharacteristic`:
-    /*
-    try {
-      final List<BluetoothService> services = await connectedLuminoDevice!.discoverServices();
-      for (var service in services) {
-        // Look for the service UUID for your device
-        if (service.uuid.toString() == 'YOUR_SERVICE_UUID') {
-          for (var characteristic in service.characteristics) {
-            // Look for the characteristic UUID for dimming
-            if (characteristic.uuid.toString() == 'YOUR_DIMMING_CHAR_UUID') {
-              // Convert percentage to a byte (0-100)
-              await characteristic.write([percentage], withoutResponse: true);
-              print('Wrote percentage $percentage to characteristic.');
-              return;
-            }
-          }
-        }
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Warning: Characteristic not found.')),
-      );
-    } catch (e) {
-      print('BLE Write Error: $e');
-    }
-    */
-    // --- END BLE WRITE CODE PLACEHOLDER ---
-
-    // Temporary UI feedback
-    // ScaffoldMessenger.of(context).showSnackBar(
-    //   SnackBar(content: Text('Dimming value set to $percentage%. (BLE simulated)')),
-    // );
   }
 
   void _handleDisconnection() {
@@ -789,8 +744,23 @@ class _ControlPageState extends State<ControlPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Lumino Control (${connectedLuminoDevice?.platformName ?? 'N/A'})'),
-        backgroundColor: Colors.blueAccent,
+        title: Text('Lumino Control'),
+        centerTitle: true,
+        backgroundColor: Colors.black,
+        elevation: 2.0,
+
+        actions: <Widget>[
+          IconButton(
+            // Use the exit icon to visually represent disconnection
+            icon: const Icon(
+              Icons.exit_to_app,
+              color: Colors.red, // Make it red for high visibility/warning
+            ),
+            onPressed: _disconnect, // Call your existing disconnect function
+            tooltip: 'Disconnect', // Good practice for accessibility
+          ),
+          const SizedBox(width: 8), // Optional: small padding on the right edge
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
@@ -1041,29 +1011,7 @@ class _ControlPageState extends State<ControlPage> {
                 ),
 
                 const SizedBox(width: 15),
-
-                // 2. Duration Input Field
-                // SizedBox(
-                //   width: 120, // Slightly wider to include the label
-                //   child: Column(
-                //     mainAxisSize: MainAxisSize.min,
-                //     children: [
-                //       const Text("Duration (s)", style: TextStyle(fontSize: 12)),
-                //       const SizedBox(height: 4),
-                //       TextField(
-                //         controller: _durationController,
-                //         keyboardType: TextInputType.number,
-                //         textAlign: TextAlign.center,
-                //         decoration: const InputDecoration(
-                //           border: OutlineInputBorder(),
-                //           contentPadding: EdgeInsets.symmetric(horizontal: 5, vertical: 5),
-                //         ),
-                //       ),
-                //     ],
-                //   ),
-                // ),
-
-                const SizedBox(width: 15),
+                // const SizedBox(width: 15),
 
                 // 3. STOP Button
                 ElevatedButton.icon(
@@ -1076,25 +1024,6 @@ class _ControlPageState extends State<ControlPage> {
                   ),
                 ),
               ],
-            ),
-
-            const SizedBox(height: 30),
-
-            // --- Disconnect Button ---
-            Padding(
-              padding: const EdgeInsets.only(bottom: 20.0),
-              child: Center(
-                child: ElevatedButton.icon(
-                  onPressed: _disconnect,
-                  icon: const Icon(Icons.bluetooth_disabled),
-                  label: const Text('Disconnect'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-                  ),
-                ),
-              ),
             ),
           ],
         ),
