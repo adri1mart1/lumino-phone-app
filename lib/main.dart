@@ -1,33 +1,29 @@
-// main.dart
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'lumino_pages.dart'; // Import the file containing your pages
+import 'lumino_pages.dart';
 
-// 1. Define the GoRouter configuration
 final GoRouter _router = GoRouter(
-  initialLocation: '/', // Start on the StartPage
+  initialLocation: '/',
   routes: <RouteBase>[
     GoRoute(
       path: '/',
       builder: (BuildContext context, GoRouterState state) {
-        return const StartPage(); // Route for the first page
+        return const StartPage();
       },
     ),
     GoRoute(
       path: '/control',
       builder: (BuildContext context, GoRouterState state) {
-        return const ControlPage(); // Route for the second page
+        return const ControlPage();
       },
     ),
   ],
 );
 
-// 2. Main function to run the app
 void main() {
   runApp(const LuminoApp());
 }
 
-// 3. Main Application Widget
 class LuminoApp extends StatelessWidget {
   const LuminoApp({super.key});
 
@@ -39,7 +35,7 @@ class LuminoApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         useMaterial3: false, // Ensure compatibility with older Android
       ),
-      routerConfig: _router, // Use the router configuration
+      routerConfig: _router,
     );
   }
 }

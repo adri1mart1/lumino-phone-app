@@ -14,6 +14,7 @@ const String LP_AUTOPWM_CHAR_UUID = "8e2a9194-7a6f-4e60-9fb9-2262a8d35112";
 const String LP_TIME_SERVICE_UUID = "00001805-0000-1000-8000-00805f9b34fb";
 const String LP_CURRENT_TIME_CHAR_UUID = "00002a2b-0000-1000-8000-00805f9b34fb";
 const double LP_MAX_PWM_VALUE = 1000000;
+const double LP_FINE_PWM_MAX_VALUE = LP_MAX_PWM_VALUE / 100;
 BluetoothDevice? connectedLuminoDevice;
 
 // --- State Class for the Control Page ---
@@ -193,29 +194,22 @@ class _StartPageState extends State<StartPage> {
             child: Image.asset(
               'assets/background.png',
               fit: BoxFit.cover, // Ensure the image covers the entire screen area
-              opacity: const AlwaysStoppedAnimation(0.2), // Optional: Adjust opacity for better text readability
+              opacity: const AlwaysStoppedAnimation(1), // Optional: Adjust opacity for better text readability
             ),
           ),
           ListView(
             padding: const EdgeInsets.all(20.0),
             children: <Widget>[
-              const Text(
-                "Welcome to the Lumino Project",
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blueGrey,
-                ),
-              ),
-              const SizedBox(height: 40),
+              // const SizedBox(height: 40),
               if (_isConnecting)
                 const CircularProgressIndicator(),
-              const SizedBox(height: 20),
+              // const SizedBox(height: 20),
               Text(
                 _connectionStatus,
+                textAlign: TextAlign.center,
                 style: TextStyle(
                   color: _connectionStatus.contains('Ready') || _connectionStatus.contains('Connected')
-                      ? Colors.green
+                      ? Colors.white
                       : Colors.red,
                 ),
               ),
@@ -261,7 +255,7 @@ class _ControlPageState extends State<ControlPage> {
 
   bool _isAlarmEnabled = false;
   // Map to track the state of each day (1=Monday, 7=Sunday)
-  Map<int, bool> _alarmDays = {
+  final Map<int, bool> _alarmDays = {
       1: false, // Monday
       2: false, // Tuesday
       3: false, // Wednesday
@@ -277,7 +271,7 @@ class _ControlPageState extends State<ControlPage> {
   BluetoothCharacteristic? _autoPwmCharacteristic;
 
   // Controller for the manual input field
-  late final TextEditingController _valueController; // Renamed controller
+  late final TextEditingController _valueController;
   int _durationSeconds = 60;
   late final TextEditingController _durationController = TextEditingController(text: 60.toString());
 
@@ -321,7 +315,6 @@ class _ControlPageState extends State<ControlPage> {
             _autoPwmCharacteristic = characteristic;
             print("Found and stored AutoPWM characteristic: ${characteristic.uuid}");
           }
-          // Add checks for other characteristics (e.g., time/alarm) here later
         }
       } else if (service.uuid == targetTimeServiceGuid) {
         for (var characteristic in service.characteristics) {
@@ -338,7 +331,6 @@ class _ControlPageState extends State<ControlPage> {
         _alarmTimeCharacteristic == null || _autoPwmCharacteristic == null) {
       _showError("Critical Error: One or more characteristics (PWM/Time/Alarm) not found.");
     } else {
-      // NEW: Trigger the read operation after successful discovery
       _readInitialData();
     }
   }
@@ -352,15 +344,11 @@ class _ControlPageState extends State<ControlPage> {
       return;
     }
 
-    // 1. Read Current Time (Using BLE CTS Format)
     try {
       List<int> currentTimeBytes = await _currentTimeCharacteristic!.read();
 
-      // Ensure 10 bytes are received as per BLE CTS standard
       if (currentTimeBytes.length == CTS_CURRENT_TIME_LENGTH) {
         final ByteData byteData = ByteData.sublistView(Uint8List.fromList(currentTimeBytes));
-
-        // Decode the 10-byte structure:
 
         // Bytes 0-1: Year (Little Endian)
         int year = byteData.getUint16(0, Endian.little);
@@ -372,7 +360,6 @@ class _ControlPageState extends State<ControlPage> {
         int minute = byteData.getUint8(5);
         int second = byteData.getUint8(6);
 
-        // Create Dart DateTime object (Day of Week, Fractions, Adjust Reason are ignored for DateTime creation)
         DateTime currentTime = DateTime(year, month, day, hour, minute, second);
 
         setState(() {
@@ -388,7 +375,6 @@ class _ControlPageState extends State<ControlPage> {
       _showError("Failed to read Current Time: ${e.toString()}");
     }
 
-    // 2. Read Alarm Data (Decoding 4-byte custom struct)
     try {
       List<int> alarmTimeBytes = await _alarmTimeCharacteristic!.read();
 
@@ -412,7 +398,6 @@ class _ControlPageState extends State<ControlPage> {
           // Zephyr: MONDAY is BIT(0), TUESDAY is BIT(1), etc.
           // Flutter: 1=Mon, 2=Tue, ..., 7=Sun
           for (int i = 0; i < 7; i++) {
-              // Check if the i-th bit is set
               bool isSet = (dayOfWeekBitset & (1 << i)) != 0;
               // Map bit index (0-6) to day index (1-7)
               _alarmDays[i + 1] = isSet;
@@ -436,12 +421,9 @@ class _ControlPageState extends State<ControlPage> {
     }
 
     final DateTime now = DateTime.now();
-
-    // 1. Prepare the 10-byte data structure
     final ByteData byteData = ByteData(CTS_CURRENT_TIME_LENGTH);
 
     // Byte 0-1: Year (uint16_t, Little Endian)
-    // The C code uses sys_cpu_to_le16, so we must use Endian.little
     byteData.setUint16(0, now.year, Endian.little);
 
     // Byte 2: Month (uint8_t, 1=Jan)
@@ -465,21 +447,18 @@ class _ControlPageState extends State<ControlPage> {
     // Byte 8: Fractions 256 (uint8_t, often 0)
     byteData.setUint8(8, 0);
 
-    // Byte 9: Adjust Reason (uint8_t, 0=No update, as per your C code)
+    // Byte 9: Adjust Reason (uint8_t, 0=No update)
     byteData.setUint8(9, 0);
 
     final List<int> valueBytes = byteData.buffer.asUint8List();
 
-    // 2. Write the data
     try {
-        // Use withoutResponse: false (standard write)
         await _currentTimeCharacteristic!.write(valueBytes, withoutResponse: false);
 
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('System time synchronized to: ${now.toIso8601String()}')),
         );
 
-        // After writing, re-read the device time to confirm synchronization
         _readInitialData();
 
     } catch (e) {
@@ -493,17 +472,14 @@ class _ControlPageState extends State<ControlPage> {
         return;
     }
 
-    // 1. Encode Day of Week Bitset (Byte 3)
     int dayOfWeekBitset = 0;
     // Iterate from Monday (index 1) to Sunday (index 7)
     for (int i = 1; i <= 7; i++) {
         if (_alarmDays[i] == true) {
-            // Set the corresponding bit (i-1 is the bit index: 0 for Mon, 6 for Sun)
             dayOfWeekBitset |= (1 << (i - 1));
         }
     }
 
-    // 2. Prepare the 4-byte data structure
     final ByteData byteData = ByteData(ALARM_CHAR_LENGTH);
 
     // Byte 0: is_enabled (1 or 0)
@@ -520,7 +496,6 @@ class _ControlPageState extends State<ControlPage> {
 
     final List<int> valueBytes = byteData.buffer.asUint8List();
 
-    // 3. Write the data
     try {
         await _alarmTimeCharacteristic!.write(valueBytes, withoutResponse: false);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -572,19 +547,16 @@ class _ControlPageState extends State<ControlPage> {
       _discoverAndStoreCharacteristics();
     }
 
-
-    // Initialize the text field with the current slider value
     _valueController = TextEditingController(
       text: _data.dimmingValue.round().toString(),
     );
-    // ... (rest of initState remains the same)
 
     _durationController.addListener(_updateDurationFromField);
   }
 
   @override
   void dispose() {
-    _valueController.dispose(); // Use new controller name
+    _valueController.dispose();
     _durationController.dispose();
     super.dispose();
   }
@@ -614,8 +586,8 @@ class _ControlPageState extends State<ControlPage> {
   }
 
   void _handleFineSliderChange(double newValue) {
-      if (_data.dimmingValue <= 10000) {
-          double commandValue = newValue.clamp(0, 10000);
+      if (_data.dimmingValue <= LP_FINE_PWM_MAX_VALUE) {
+          double commandValue = newValue.clamp(0, LP_FINE_PWM_MAX_VALUE);
           _updateDimmingUI(commandValue);
       }
   }
@@ -624,17 +596,14 @@ class _ControlPageState extends State<ControlPage> {
       _sendDimmingValueToBLE(finalValue.round());
   }
 
-  // Function to update the slider value and the text field
   void _updateDimmingValue(double newValue) {
     setState(() {
-      _data.dimmingValue = newValue; // Update the full range value
-      // Update the text field to match the slider's rounded value
+      _data.dimmingValue = newValue;
       _valueController.text = newValue.round().toString();
     });
     _sendDimmingValueToBLE(newValue.round());
   }
 
-  // This function now sends the raw value directly, no multiplication needed.
   void _sendDimmingValueToBLE(int rawValue) async {
     if (_pwmCharacteristic == null) {
       _showError('Characteristic not ready. Try reconnecting.');
@@ -648,7 +617,6 @@ class _ControlPageState extends State<ControlPage> {
     try {
       await _pwmCharacteristic!.write(valueBytes, withoutResponse: false);
 
-      // UI Feedback
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('BLE Write Success: Sent $rawValue (PWM value)')),
       );
@@ -657,7 +625,6 @@ class _ControlPageState extends State<ControlPage> {
       _showError('BLE Write Failed: ${e.toString()}');
     }
 
-    // Temporary UI feedback
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Dimming value set to $rawValue (Raw PWM Value)')),
     );
@@ -673,15 +640,14 @@ class _ControlPageState extends State<ControlPage> {
         newValue = LP_MAX_PWM_VALUE;
     }
 
-    // Apply the update if we are in the active control range (0-100)
-    // OR if we are adjusting downward from just above 100 (101 -> 100)
-    if (currentValue <= 10000 || newValue <= 10000) {
-        _updateDimmingUI(newValue);
-        _handleSliderValueChangeEnd(newValue);
+    // Apply the update if we are in the active control range (0-LP_FINE_PWM_MAX_VALUE)
+    // OR if we are adjusting downward from just above LP_FINE_PWM_MAX_VALUE
+    if (currentValue <= LP_FINE_PWM_MAX_VALUE || newValue <= LP_FINE_PWM_MAX_VALUE) {
+      _updateDimmingUI(newValue);
+      _handleSliderValueChangeEnd(newValue);
     }
   }
 
-  // Helper functions (omitted for brevity, assume they are the same as before)
   String _formatDateTime(DateTime dt) {
     return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
            '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
@@ -692,7 +658,6 @@ class _ControlPageState extends State<ControlPage> {
   }
 
   Future<void> _selectAlarmTime(TimeOfDay selectedTime) async {
-    // 1. Create a new DateTime object using the selected time
     // We only care about hour and minute for the alarm characteristic
     DateTime newAlarmDateTime = DateTime(
         _data.alarmDateTime.year,
@@ -702,7 +667,6 @@ class _ControlPageState extends State<ControlPage> {
         selectedTime.minute,
     );
 
-    // 2. Update the state
     setState(() {
       _data.alarmDateTime = newAlarmDateTime;
     });
@@ -719,10 +683,8 @@ class _ControlPageState extends State<ControlPage> {
   }
 
   void _disconnect() async {
-    // 1. Check if the device object is available
     if (connectedLuminoDevice != null) {
         try {
-            // 2. Send the explicit disconnect command to the BLE stack
             await connectedLuminoDevice!.disconnect();
 
             // NOTE: The connectionState listener often catches the disconnect,
@@ -748,18 +710,16 @@ class _ControlPageState extends State<ControlPage> {
         centerTitle: true,
         backgroundColor: Colors.black,
         elevation: 2.0,
-
         actions: <Widget>[
           IconButton(
-            // Use the exit icon to visually represent disconnection
             icon: const Icon(
               Icons.exit_to_app,
-              color: Colors.red, // Make it red for high visibility/warning
+              color: Colors.red,
             ),
-            onPressed: _disconnect, // Call your existing disconnect function
-            tooltip: 'Disconnect', // Good practice for accessibility
+            onPressed: _disconnect,
+            tooltip: 'Disconnect',
           ),
-          const SizedBox(width: 8), // Optional: small padding on the right edge
+          const SizedBox(width: 8),
         ],
       ),
       body: SingleChildScrollView(
@@ -767,8 +727,6 @@ class _ControlPageState extends State<ControlPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            // ... (Current Time and Alarm Time Sections remain the same) ...
-
             // --- Current Date/Time Section ---
             Card(
               elevation: 4,
@@ -802,7 +760,6 @@ class _ControlPageState extends State<ControlPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // 1. Enable Switch
                 Row(
                     children: [
                         const Text('Alarm Enabled:'),
@@ -812,13 +769,13 @@ class _ControlPageState extends State<ControlPage> {
                                 setState(() {
                                     _isAlarmEnabled = value;
                                 });
-                                _writeAlarmToBLE(); // Write immediately on switch change
+                                _writeAlarmToBLE();
                             },
                         ),
                     ],
                 ),
 
-                // 2. Time Picker Button (Uses existing logic)
+                // 2. Time Picker Button
                 TextButton(
                   onPressed: () async {
                     TimeOfDay? selectedTime = await showTimePicker(
@@ -826,8 +783,8 @@ class _ControlPageState extends State<ControlPage> {
                       initialTime: TimeOfDay.fromDateTime(_data.alarmDateTime),
                     );
                     if (selectedTime != null) {
-                      _selectAlarmTime(selectedTime); // Calls the existing _selectAlarmTime function
-                      _writeAlarmToBLE(); // Write immediately after time change
+                      _selectAlarmTime(selectedTime);
+                      _writeAlarmToBLE();
                     }
                   },
                   child: Text(
@@ -857,7 +814,7 @@ class _ControlPageState extends State<ControlPage> {
                         setState(() {
                           _alarmDays[dayIndex] = !(_alarmDays[dayIndex] ?? false);
                         });
-                        _writeAlarmToBLE(); // Write immediately on day toggle
+                        _writeAlarmToBLE();
                       },
                       child: Container(
                         padding: const EdgeInsets.all(8),
@@ -895,7 +852,6 @@ class _ControlPageState extends State<ControlPage> {
 
             Row(
               children: <Widget>[
-                // 1. Horizontal Slider
                 const SizedBox(width: 50, child: Text("Main", style: TextStyle(fontSize: 12))),
                 Expanded(
                   child: Slider(
@@ -941,32 +897,32 @@ class _ControlPageState extends State<ControlPage> {
             ),
             const SizedBox(height: 10),
 
-            // --- 2. FINE SLIDER ROW (Focus 0 - 10000) ---
+            // --- fine slider ---
             Row(
               children: <Widget>[
                 const SizedBox(width: 50, child: Text("Fine", style: TextStyle(fontSize: 12))),
                 Expanded(
                   child: Slider(
                     // Visual Value: Caps at 100 for display
-                    value: _data.dimmingValue.clamp(0, 10000),
+                    value: _data.dimmingValue.clamp(0, LP_FINE_PWM_MAX_VALUE),
                     min: 0,
-                    max: 10000, // Range is always 0 to 10000
-                    divisions: 100, // 100 unit per division
+                    max: LP_FINE_PWM_MAX_VALUE,
+                    divisions: 100,
                     label: _data.dimmingValue.round().toString(),
-                    onChanged: _handleFineSliderChange, // Only allows input if total value is <= 100
-                    onChangeEnd: _handleSliderValueChangeEnd, // Sends the final command
+                    onChanged: _handleFineSliderChange,
+                    onChangeEnd: _handleSliderValueChangeEnd,
                     activeColor: Colors.green,
                     inactiveColor: Colors.green.shade100,
                   ),
                 ),
-                const SizedBox(width: 100 + 10), // Offset to align with the text field column
+                const SizedBox(width: 100 + 10),
               ],
             ),
 
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Minus 1 Button
+                // Minus Button
                 ElevatedButton.icon(
                   onPressed: () => _handlePwmButtonPress(-100),
                   icon: const Icon(Icons.remove),
@@ -979,7 +935,7 @@ class _ControlPageState extends State<ControlPage> {
                 ),
                 const SizedBox(width: 50),
 
-                // Plus 1 Button
+                // Plus Button
                 ElevatedButton.icon(
                   onPressed: () => _handlePwmButtonPress(100),
                   icon: const Icon(Icons.add),
@@ -1011,7 +967,6 @@ class _ControlPageState extends State<ControlPage> {
                 ),
 
                 const SizedBox(width: 15),
-                // const SizedBox(width: 15),
 
                 // 3. STOP Button
                 ElevatedButton.icon(
